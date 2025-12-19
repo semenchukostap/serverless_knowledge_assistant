@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serverless Knowledge Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 Serverless Knowledge Assistant</h1>
+            <p class="subtitle">Query the AWS Serverless Applications Lens whitepaper</p>
+        </header>
+
+        <form id="queryForm">
+            <textarea 
+                id="queryInput" 
+                placeholder="Ask a question about the AWS Serverless Applications Lens (e.g., What are the key principles of serverless architecture? How does Lambda handle concurrency?)"
+                required
+            ></textarea>
+            <button type="submit" id="submitBtn">Ask Question</button>
+        </form>
+
+        <div id="loadingArea" class="hidden">
+            <div class="spinner"></div>
+            <p>Processing your question...</p>
+        </div>
+
+        <div id="errorArea" class="hidden"></div>
+
+        <div id="answerArea" class="hidden">
+            <h2>Answer</h2>
+            <div id="answerContent"></div>
+            <button id="copyBtn">Copy Answer</button>
+        </div>
+
+        <div id="queryHistory" class="query-history hidden">
+            <h3>Recent Queries</h3>
+            <div id="historyList"></div>
+        </div>
+    </div>
+
+    <script>
+        // API Gateway endpoint (injected by Terraform during deployment)
+        const API_GATEWAY_URL = '${api_gateway_query_endpoint}';
+
+        // Load query history from localStorage
+        let queryHistory = JSON.parse(localStorage.getItem('queryHistory') || '[]');
+        const maxHistoryItems = 5;
+
+        function updateHistoryDisplay() {
+            const historySection = document.getElementById('queryHistory');
+            const historyList = document.getElementById('historyList');
+            
+            if (queryHistory.length === 0) {
+                historySection.classList.add('hidden');
+                return;
+            }
+
+            historySection.classList.remove('hidden');
+            historyList.innerHTML = '';
+
+            queryHistory.slice(0, maxHistoryItems).forEach(item => {
+                const historyItem = document.createElement('div');
+                historyItem.className = 'history-item';
+                historyItem.innerHTML = `
+                    <div class="history-query">$${escapeHtml(item.query)}</div>
+                    <div class="history-answer">$${escapeHtml(item.answer.substring(0, 100))}...</div>
+                `;
+                historyItem.addEventListener('click', () => {
+                    document.getElementById('queryInput').value = item.query;
+                    showAnswer(item.answer);
+                });
+                historyList.appendChild(historyItem);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function addToHistory(query, answer) {
+            queryHistory.unshift({ query, answer, timestamp: Date.now() });
+            queryHistory = queryHistory.slice(0, maxHistoryItems);
+            localStorage.setItem('queryHistory', JSON.stringify(queryHistory));
+            updateHistoryDisplay();
+        }
+
+        function showAnswer(answer) {
+            document.getElementById('answerContent').textContent = answer;
+            document.getElementById('answerArea').classList.remove('hidden');
+            document.getElementById('errorArea').classList.add('hidden');
+        }
+
+        function showError(message) {
+            document.getElementById('errorArea').textContent = `Error: $${message}`;
+            document.getElementById('errorArea').classList.remove('hidden');
+            document.getElementById('answerArea').classList.add('hidden');
+        }
+
+        function setLoading(loading) {
+            const loadingArea = document.getElementById('loadingArea');
+            const submitBtn = document.getElementById('submitBtn');
+            const queryInput = document.getElementById('queryInput');
+            
+            if (loading) {
+                loadingArea.classList.remove('hidden');
+                submitBtn.disabled = true;
+                queryInput.disabled = true;
+            } else {
+                loadingArea.classList.add('hidden');
+                submitBtn.disabled = false;
+                queryInput.disabled = false;
+            }
+        }
+
+        // Copy to clipboard functionality
+        document.getElementById('copyBtn').addEventListener('click', async () => {
+            const answerText = document.getElementById('answerContent').textContent;
+            try {
+                await navigator.clipboard.writeText(answerText);
+                const copyBtn = document.getElementById('copyBtn');
+                const originalText = copyBtn.textContent;
+                copyBtn.textContent = 'Copied!';
+                copyBtn.classList.add('copied');
+                setTimeout(() => {
+                    copyBtn.textContent = originalText;
+                    copyBtn.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                showError('Failed to copy to clipboard');
+            }
+        });
+
+        // Form submission
+        document.getElementById('queryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const query = document.getElementById('queryInput').value.trim();
+
+            if (!query) {
+                showError('Please enter a question');
+                return;
+            }
+
+            setLoading(true);
+            document.getElementById('errorArea').classList.add('hidden');
+            document.getElementById('answerArea').classList.add('hidden');
+
+            try {
+                // Remove trailing slash if present
+                const endpoint = API_GATEWAY_URL.replace(/\/$/, '');
+                
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query: query })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP $${response.status}: $${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                if (!data.answer) {
+                    throw new Error('No answer received from API');
+                }
+
+                showAnswer(data.answer);
+                addToHistory(query, data.answer);
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError(error.message || 'Failed to get answer. Please try again.');
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        // Initialize history display
+        updateHistoryDisplay();
+    </script>
+</body>
+</html>
+
